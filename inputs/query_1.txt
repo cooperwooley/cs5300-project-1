@@ -1,0 +1,3 @@
+SELECT E.name, D.dept_name
+FROM Employee E, Department D
+WHERE E.dept_id = D.id AND E.age > 30
