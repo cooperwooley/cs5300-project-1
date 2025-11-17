@@ -114,6 +114,18 @@ class QueryNode:
         return f"{self.op_type({self. condition or self.attrs or self.relation})}"
 
 
+    def copy(self):
+        # Creates a deep copy of a node
+        new_node = QueryNode(
+            op_type = self.op_type,
+            condition = self.condition,
+            attrs = self.attrs.copy() if self.attrs else None,
+            relation = self.relation,
+            children = [child.copy() for child in self.children]
+        )
+        return new_node
+
+
 def build_from_nodes(from_clause):
     nodes = []
     for table in from_clause:
@@ -129,90 +141,87 @@ def classify_predicates(predicates, alias_map):
     joins = []
 
     for pred in predicates:
-        left_alias = pred['left'].split('.')[0]
+        left_alias = pred['left'].split('.')[0] if '.' in pred['left'] else None
         right_alias = pred['right'].split('.')[0] if '.' in pred['right'] else None
 
-        if right_alias and right_alias in alias_map: # join condition
+        if left_alias and right_alias and left_alias in alias_map and right_alias in alias_map and left_alias != right_alias:
             joins.append(pred)
-        else: # selection condition
+        elif left_alias and left_alias in alias_map:
             selections.setdefault(left_alias, []).append(pred)
+        elif right_alias and right_alias in alias_map:
+            selections.setdefault(right_alias, []).append(pred)
 
     return selections, joins
 
 
-def apply_selections(base_nodes, selections):
-    new_nodes = []
-    for node in base_nodes:
-        alias = node.relation.split('(')[1].strip(')')
-        if alias in selections:
-            for pred in selections[alias]:
-                node = QueryNode(
-                    op_type="select",
-                    condition=f"{pred['left']} {pred['op']} {pred['right']}",
-                    children=[node]
-                )
-        new_nodes.append(node)
-    return new_nodes
+def build_canonical_tree(parsed):
+    base_nodes = build_from_nodes(parsed['from'])
 
+    # Build cartesian product
+    root = base_nodes[0]
+    for i in range(1, len(base_nodes)):
+        root = QueryNode(op_type="product", children=[root, base_nodes[i]])
 
-def combine_relations_with_joins(nodes, joins):
-    if not joins:
-        # Cartesian prduct of all tables
-        while len(nodes) > 1:
-            right = nodes.pop()
-            left = nodes.pop()
-            nodes.append(QueryNode(op_type="product", children=[left, right]))
-        return nodes[0]
-    else:
-        # Apply each join
-        current = nodes[0]
-        for i in range(1, len(nodes)):
-            right = nodes[i]
-            cond = joins[i-1]
-            join_cond = f"{cond['left']} {cond['op']} {cond['right']}"
-            current = QueryNode(op_type='join', condition=join_cond, children=[current, right])
-        return current
+    # Apply combined selection if WHERE
+    if 'where' in parsed and parsed['where']:
+        all_conditions = []
+        for pred in parsed['where']:
+            all_conditions.append(f"{pred['left']} {pred['op']} {pred['right']}")
+        combined_condition = " AND ".join(all_conditions)
+        root = QueryNode(op_type="select", condition=combined_condition, children=[root])
 
-
-def build_higher_nodes(root, parsed):
-    if 'group by' in parsed:
-        root = QueryNode("groupby", attrs=parsed['group by'], children=[root])
-
+    # Apply projection
     if 'select' in parsed:
         attrs = [a['expr'] for a in parsed['select']]
         root = QueryNode('project', attrs=attrs, children=[root])
 
+    # Apply group by
+    if 'group by' in parsed:
+        root = QueryNode("groupby", attrs=parsed['group by'], children=[root])
+
+    # Apply order by
     if 'order by' in parsed:
         order_attrs = [f"{a['attr']} {a['order']}" for a in parsed['order by']]
-        root = QueryNode('orderby', attrs=order_attrs, children=[root])
+        root = QueryNode('orderyby', attrs=order_attrs, children=[root])
 
     return root
 
 
-def build_canonical_tree(parsed):
-    base_nodes = build_from_nodes(parsed['from'])
-    alias_map = {t['alias']: t['table'] for t in parsed['from']}
+def optimize_query(root, parsed, alias_map):
+    trees = []
 
-    selections, joins = classify_predicates(parsed.get('where', []), alias_map)
-    selected_nodes = apply_selections(base_nodes, selections)
-    root = combine_relations_with_joins(selected_nodes, joins)
+    trees.append(("canonical", root.copy()))
 
-    root = build_higher_nodes(root, parsed)
-
-    return root
+    return trees
 
 
 def render_tree(node, graph=None, parent=None):
     if graph is None:
         graph = Digraph()
+        graph.attr(randir='TB')
+        graph.attr('node', shape='box')
 
-    label = node.op_type
-    if node.condition:
-        label += f" [{node.condition}]"
-    elif node.attrs:
-        label += f" ({', '.join(node.attrs)})"
-    elif node.relation:
-        label += f" [{node.relation}]"
+    if node.op_type == "relation":
+        label = node.relation
+    elif node.op_type == "product":
+        label = "x"
+    elif node.op_type == "select":
+        label = f"σ\n[{node.condition}]"
+    elif node.op_type == "project":
+        attrs_str = ", ".join(node.attrs)
+        label = f"π\n{attrs_str}"
+    elif node.op_type == "join":
+        label = f"⋈\n[{node.condition}]"
+    elif node.op_type == "groupby":
+        label = f"GROUP BY\n{', '.join(node.attrs)}"
+    elif node.op_type == "orderby":
+        label = f"ORDER BY\n{', '.join(node.attrs)}"
+    else:
+        label = node.op_type
+        if node.condition:
+            label += f"\n[{node.condition}]"
+        elif node.attrs:
+            label += f"\n({', '.join(node.attrs)})"
 
     graph.node(str(id(node)), label)
 
@@ -231,11 +240,26 @@ if __name__ == "__main__":
         sys.exit(1)
     query_file = sys.argv[1]
     with open(query_file, 'r') as file:
-        query = file.read()
+        content = file.read()
+
+    # Find the start of the SQL query
+    select_match = re.search(r'\bSELECT\b', content, flags=re.IGNORECASE)
+    if select_match:
+        query = content[select_match.start():].strip()
+    else:
+        query = content.strip()
+        print("Warning: No SELECT statement found in file, using entire content")
 
     parsed = parse_query(query)
+    alias_map = {t['alias']: t['table'] for t in parsed['from']}
 
-    root = build_canonical_tree(parsed)
+    canonical_root = build_canonical_tree(parsed)
 
-    graph = render_tree(root)
-    graph.render('outputs/canonical_tree', format='png')
+    trees = optimize_query(canonical_root, parsed, alias_map)
+
+    # Render each tree
+    for step_name, tree_root in trees:
+        graph = render_tree(tree_root)
+        output_path = f"outputs/{step_name}"
+        graph.render(output_path, format='png')
+        print(f"Generated {output_path}.png")

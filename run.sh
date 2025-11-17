@@ -1,7 +1,18 @@
 # run.sh
 
+# create virtual env
+if [ ! -d "venv" ]; then
+    echo "Creating virtual environment..."
+    python3 -m venv venv
+fi
+
+source venv/bin/activate
+
 # install dependencies
-pip install -r requirements.txt
+echo "Installing dependencies..."
+sudo apt update
+sudo apt install graphviz
 
 # run the query optimizer
+echo "Running the optimizer..."
 python3 heuristic_query_optimizer.py $1 
