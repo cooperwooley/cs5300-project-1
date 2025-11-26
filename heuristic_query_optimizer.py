@@ -187,10 +187,185 @@ def build_canonical_tree(parsed):
     return root
 
 
+def rule1_break_selections(root):
+    # Break conjunctive selection conditions into a sequence of single condition selections
+    if root.op_type == "select" and root.condition and " AND " in root.condition:
+        # Split the condition
+        conditions = [c.strip() for c in root.condition.split(" AND ")]
+        # Build chain of selections
+        child = root.children[0]
+        for cond in reversed(conditions):
+            child = QueryNode(op_type="select", condition=cond, children=[child])
+        return child
+    return root
+
+
+def apply_rule1(node):
+    # Apply rule 1 recursively
+    new_children = [apply_rule1(child) for child in node.children]
+    node.children = new_children
+
+    # Apply rule 1 to this node
+    if node.op_type == "select" and node.condition and " AND " in node.condition:
+        conditions = [c.strip() for c in node.condition.split(" AND ")]
+        child = node.children[0]
+        for cond in reversed(conditions):
+            child = QueryNode(op_type="select", condition=cond, children=[child])
+        return child
+    return node
+
+
+def apply_rule2(root, alias_map):
+    # Move selections down as far as possible
+
+    def get_relations_in_condition(condition, alias_map):
+        # Extract relation aliases from condition string
+        # Look for patterns like "alias.attribute" or just "alias" 
+        involved = set()
+        condition_lower = condition.lower()
+        
+        for alias in alias_map.keys():
+            alias_lower = alias.lower()
+            # Check if alias appears as "alias." or "alias " or at start/end
+            pattern = r'\b' + re.escape(alias_lower) + r'\.'
+            if re.search(pattern, condition_lower):
+                involved.add(alias)
+        
+        return list(involved)
+
+    def extract_alias_from_relation(relation_str):
+        match = re.search(r'\(([^)]+)\)', relation_str)
+        if match:
+            return match.group(1).strip()
+        return relation_str.trip()
+
+    def subtree_contains_relation(node, target_alias):
+        # Check if this subtree contains the target relation
+        if node.op_type == "relation":
+            # Extract alias from relation string
+            relation_alias = extract_alias_from_relation(node.relation)
+            if relation_alias.lower() == target_alias.lower():
+                return True
+        for child in node.children:
+            if subtree_contains_relation(child, target_alias):
+                return True
+        return False
+
+    def push_selection_into_subtree(node, selection_condition, target_alias):
+        # Recursively push selection down into the subtree containing target_alias
+        if node.op_type == "relation":
+            # Place selection right above it
+            return QueryNode(op_type="select", condition=selection_condition, children=[node])
+        
+        # If selection node, push through
+        if node.op_type == "select":
+            child = node.children[0]
+            pushed_child = push_selection_into_subtree(child, selection_condition, target_alias)
+            return QueryNode(op_type="select", condition=node.condition, children=[pushed_child])
+
+        # Process children first
+        new_children = []
+        for child in node.children:
+            if subtree_contains_relation(child, target_alias):
+                # Push selection into it
+                new_children.append(push_selection_into_subtree(child, selection_condition, target_alias))
+            else:
+                new_children.append(push_down(child))
+        
+        # Reconstruct node with processed children
+        return QueryNode(
+            op_type=node.op_type,
+            condition=node.condition,
+            attrs=node.attrs.copy() if node.attrs else None,
+            relation=node.relation,
+            children=new_children
+        )
+
+    def push_down(node):
+        # Process children first (bottom-up)
+        new_children = [push_down(child) for child in node.children]
+        node.children = new_children
+
+        # If this is a selection node, try to push it down
+        if node.op_type == "select" and node.condition:
+            involved_relations = get_relations_in_condition(node.condition, alias_map)
+            
+            if len(involved_relations) == 1:
+                # Selection applies to only one relation
+                target_alias = involved_relations[0]
+                child = node.children[0]
+                
+                # Check if we can push past the child
+                # Can push past: product, join, project, select
+                # Cannot push past: groupby, orderby
+                if child.op_type in ["product", "join", "project", "select"]:
+                    # Push the selection into the child's subtree
+                    return push_selection_into_subtree(child, node.condition, target_alias)
+                elif child.op_type == "select":
+                    # Already a selection
+                    return push_selection_into_subtree(child, node.condition, target_alias)
+                elif child.op_type == "relation":
+                    # Already at relation
+                    return node
+                else:
+                    return node
+            else:
+                return node
+        
+        return node
+
+    return push_down(root)
+
+
+def rule3_estimate_selectivity(predicate, alias_map):
+    # Estimate selectivity qualitatively
+    pass
+
+
+def apply_rule3(root, alias_map):
+    # Reorder selections so most restrictive filters are applied earliest
+    pass
+
+
+def apply_rule4(root):
+    # Combine cross-products followed by join conditions into a single join
+    pass
+
+
+def rule5_get_attributes_used(node, used_attrs):
+    # Collect all atrributes used in the tree
+    pass
+
+
+def apply_rule5(root, parsed):
+    # Apply projections early
+    pass
+
+
 def optimize_query(root, parsed, alias_map):
     trees = []
 
     trees.append(("canonical", root.copy()))
+
+    # Rule 1
+    root = apply_rule1(root.copy())
+    trees.append(("rule1", root.copy()))
+
+    # Rule 2
+    root = apply_rule2(root.copy(), alias_map)
+    trees.append(("rule2", root.copy()))
+
+    # # Rule 3
+    # root = apply_rule3(root.copy(), alias_map)
+    # trees.append(("rule3", root.copy()))
+
+    # # Rule 4
+    # root = apply_rule4(root.copy())
+    # trees.append(("rule4", root.copy()))
+
+    # # Rule 5
+    # root = apply_rule5(root.copy(), parsed)
+    # trees.append(("rule5", root.copy()))
 
     return trees
 
