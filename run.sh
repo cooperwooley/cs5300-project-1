@@ -15,4 +15,4 @@ sudo apt install graphviz
 
 # run the query optimizer
 echo "Running the optimizer..."
-python3 heuristic_query_optimizer.py $1 
+python3 src/main.py $1 
