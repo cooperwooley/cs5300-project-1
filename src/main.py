@@ -4,7 +4,8 @@ import sys
 import re
 from graphviz import Digraph
 
-from parse_query import parse_query
+from schema_parser import parse_schema
+from query_parser import parse_query
 from canonical import build_canonical_tree
 from rule1 import apply_rule1
 from rule2 import apply_rule2
@@ -13,7 +14,7 @@ from rule4 import apply_rule4
 from rule5 import apply_rule5
 
 
-def optimize_query(root, parsed, alias_map):
+def optimize_query(root, parsed, alias_map, schema=None):
     trees = []
 
     trees.append(("canonical", root.copy()))
@@ -35,7 +36,7 @@ def optimize_query(root, parsed, alias_map):
     trees.append(("rule4", root.copy()))
 
     # Rule 5
-    root = apply_rule5(root.copy(), parsed)
+    root = apply_rule5(root.copy(), parsed, schema=schema, alias_map=alias_map)
     trees.append(("rule5", root.copy()))
 
     return trees
@@ -57,7 +58,19 @@ def render_tree(node, graph=None, parent=None):
         attrs_str = ", ".join(node.attrs)
         label = f"π\n{attrs_str}"
     elif node.op_type == "join":
-        label = f"⋈\n[{node.condition}]"
+        join_label = ""
+        if node.join_type:
+            if node.join_type == "LEFT OUTER":
+                join_label = "⟕\n"
+            elif node.join_type == "RIGHT OUTER":
+                join_label = "⟖\n"
+            elif node.join_type == "FULL OUTER":
+                join_label = "⟗\n"
+            else:
+                join_label = "⋈\n"
+        else:
+            join_label = "⋈\n"
+        label = f"{join_label}\n[{node.condition}]"
     elif node.op_type == "groupby":
         label = f"GROUP BY\n{', '.join(node.attrs)}"
     elif node.op_type == "orderby":
@@ -88,6 +101,9 @@ if __name__ == "__main__":
     with open(query_file, 'r') as file:
         content = file.read()
 
+    # Parse schema first
+    schema = parse_schema(content)
+
     # Find the start of the SQL query
     select_match = re.search(r'\bSELECT\b', content, flags=re.IGNORECASE)
     if select_match:
@@ -97,11 +113,16 @@ if __name__ == "__main__":
         print("Warning: No SELECT statement found in file, using entire content")
 
     parsed = parse_query(query)
-    alias_map = {t['alias']: t['table'] for t in parsed['from']}
+    from_clause = parsed['from']
+    
+    if isinstance(from_clause, dict):
+        alias_map = {t['alias']: t['table'] for t in from_clause.get('tables', [])}
+    else:
+        alias_map = {t['alias']: t['table'] for t in from_clause}
 
     canonical_root = build_canonical_tree(parsed)
 
-    trees = optimize_query(canonical_root, parsed, alias_map)
+    trees = optimize_query(canonical_root, parsed, alias_map, schema=schema)
 
     # Render each tree
     for step_name, tree_root in trees:
