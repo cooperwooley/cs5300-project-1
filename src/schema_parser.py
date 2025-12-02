@@ -11,7 +11,7 @@ def parse_schema(content):
     if not schema_match:
         return schema
 
-    schema_text = schema_match.group(1)
+    schema_text = schema_match.group(1).lower()
 
     # Pattern to match table definitions
     table_pattern = r'(\w+)\s*\(\s*(.*?)\s*\);'

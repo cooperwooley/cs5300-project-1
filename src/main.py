@@ -103,6 +103,8 @@ if __name__ == "__main__":
 
     # Parse schema first
     schema = parse_schema(content)
+    print(f"DEBUG: Schema keys: {list(schema.keys())}")
+    print(f"DEBUG: Schema EMPLOYEE attrs: {schema.get('Employee', {}).get('attrs', [])}")
 
     # Find the start of the SQL query
     select_match = re.search(r'\bSELECT\b', content, flags=re.IGNORECASE)
